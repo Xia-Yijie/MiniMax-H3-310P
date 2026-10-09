@@ -51,10 +51,14 @@ def mux_output(video, audio, output, fps=24, sample_rate=32000):
         stream.setsampwidth(2)
         stream.setframerate(sample_rate)
         stream.writeframes(pcm.tobytes())
+    # Audio is already padded/trimmed to the video duration above. Its integer
+    # sample count may end a fraction of a sample before the last video frame.
+    # FFmpeg's -shortest can drop that frame on some releases; let both finite
+    # input streams reach EOF instead.
     subprocess.run(['ffmpeg', '-y', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24',
                     '-s', f'{width}x{height}', '-r', str(fps), '-i', str(raw_path),
                     '-i', str(wav_path), '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-                    '-crf', '18', '-c:a', 'aac', '-shortest', str(output)], check=True)
+                    '-crf', '18', '-c:a', 'aac', str(output)], check=True)
     probe = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-show_format',
                             '-of', 'json', str(output)], capture_output=True, text=True, check=True)
     return json.loads(probe.stdout)

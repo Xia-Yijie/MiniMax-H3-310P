@@ -50,14 +50,19 @@ class PipelineTests(unittest.TestCase):
         torch.testing.assert_close(one, two)
 
     def test_mux_creates_video_and_stereo_audio(self):
-        with tempfile.TemporaryDirectory() as directory:
-            video, audio = torch.rand(1, 3, 22, 32, 32), torch.zeros(2, 29600)
-            probe = mux_output(video, audio, Path(directory) / 'smoke.mp4')
-            streams = {stream['codec_type']: stream for stream in probe['streams']}
-            self.assertEqual(streams['video']['nb_frames'], '22')
-            self.assertEqual(streams['video']['r_frame_rate'], '24/1')
-            self.assertEqual(streams['audio']['channels'], 2)
-            self.assertEqual(streams['audio']['sample_rate'], '32000')
+        # Fractional audio sample durations and both padding/trimming must
+        # preserve every input video frame across FFmpeg versions.
+        for frames, audio_samples in [(22, 29600), (22, 100), (39, 53000), (56, 100)]:
+            with self.subTest(frames=frames, audio_samples=audio_samples), tempfile.TemporaryDirectory() as directory:
+                video = torch.rand(1, 3, frames, 32, 32)
+                audio = torch.zeros(2, audio_samples)
+                probe = mux_output(video, audio, Path(directory) / 'smoke.mp4')
+                streams = {stream['codec_type']: stream for stream in probe['streams']}
+                self.assertEqual(streams['video']['nb_frames'], str(frames))
+                self.assertEqual(streams['video']['r_frame_rate'], '24/1')
+                self.assertAlmostEqual(float(streams['video']['duration']), frames / 24, places=5)
+                self.assertEqual(streams['audio']['channels'], 2)
+                self.assertEqual(streams['audio']['sample_rate'], '32000')
 
 
 if __name__ == '__main__':
