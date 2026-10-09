@@ -1,0 +1,10 @@
+# CANN 8.5 Python compiler dependencies needed in a fresh virtual environment.
+# The CANN-provided te/tbe modules are loaded by its set_env.sh, not PyPI.
+-r requirements.txt
+attrs>=23,<27
+cloudpickle>=2,<4
+decorator>=5,<6
+ml-dtypes>=0.4,<1
+psutil>=5,<8
+scipy>=1.10,<2
+tornado>=6,<7

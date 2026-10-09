@@ -11,15 +11,18 @@
 需要 Python 3.10+、与硬件匹配的 Ascend 驱动/CANN、匹配版本的 torch 和 torch_npu，以及系统命令 `ffmpeg`、`ffprobe`、`curl`。请按 [torch_npu 安装说明](https://github.com/Ascend/pytorch) 安装硬件依赖；`requirements.txt` 只包含其余 Python 依赖。
 
 ```bash
+# python3 必须是 3.10+；系统默认版本较旧时使用 python3.10 等明确路径。
 python3 -m venv .venv
 source .venv/bin/activate
 # 在此环境安装与 CANN 匹配的 torch / torch_npu。
-pip install -r requirements.txt
+pip install -r requirements-ascend.txt
 export H3_CANN_ENV=/path/to/cann/set_env.sh
 export H3_PYTHON="$PWD/.venv/bin/python"
 ```
 
 `infer/run.sh` 会加载 CANN 环境并保留厂商的 `PYTHONPATH`。也支持事先加载 CANN。NPU 初始化使用 `model.runtime.initialize_npu()`，先初始化 ACL/编译选项，再初始化设备；不要绕过此顺序。
+
+在上述 aarch64 / CANN 8.5.0 环境，已使用 `pip install torch==2.9.0 torch-npu==2.9.0` 实测安装。仅运行 CPU 测试时安装 `requirements.txt` 即可。NPU 环境还需要 `requirements-ascend.txt` 中的 CANN 编译器 Python 依赖：缺少 `decorator`、`scipy` 等可能让初始化报 `aclSetCompileopt failed: 500001`。不要从 PyPI 安装同名 `te`/`tbe` 替代 CANN 自带模块。
 
 ## 权重
 
