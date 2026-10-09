@@ -1,0 +1,6 @@
+{
+  "source": "https://github.com/ggml-org/llama.cpp/blob/master/gguf-py/gguf/quants.py",
+  "source_sha256": "2c927a1b3d9f0920dcf4007fb686e1b0999333e9f65ce43dcc689900c0beae8b",
+  "seed": 147,
+  "reference": "Upstream dequantize_blocks outputs"
+}

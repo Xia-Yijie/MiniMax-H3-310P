@@ -1,0 +1,8 @@
+MiniMax-H3 Ascend inference adaptation
+Copyright 2026 Yijie Xia
+
+Original adaptation code is licensed under Apache-2.0.
+Third-party portions retain their respective licenses; see THIRD_PARTY.md
+and licenses/. Model weights and processor assets are not distributed in
+this repository and are not licensed by this repository's LICENSE.
+This is a community adaptation, not an official MiniMax or Huawei release.

@@ -1,0 +1,8 @@
+# Ascend aarch64: install a matching torch/torch_npu pair and CANN separately.
+# Verified locally with torch==2.9.0, torch-npu==2.9.0, CANN 8.5.0.
+numpy==1.26.4
+tokenizers==0.22.2
+transformers==4.57.1
+Pillow>=10
+safetensors>=0.4.5,<1
+einops>=0.8,<1
