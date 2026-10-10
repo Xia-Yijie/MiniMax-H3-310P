@@ -2,7 +2,7 @@
 
 For text-only input all three mRoPE axes coincide, so ordinary 1D RoPE
 is equivalent. Images use encode_images with the vision tower and mRoPE;
-video-reference conditioning is not implemented here.
+Videos use paired 2 fps frames, per-block timestamps, and the same vision tower.
 """
 import re
 import torch
@@ -97,15 +97,19 @@ class QwenTextEncoder(nn.Module):
 
     @torch.no_grad()
     def encode_images(self, prompt, images, device, progress=None, vision_progress=None):
-        """Ordered <Picture N> presentation, vision embedding and DeepStack."""
+        return self.encode_media(prompt, images, [], device, progress, vision_progress)
+
+    @torch.no_grad()
+    def encode_media(self, prompt, images, videos, device, progress=None, vision_progress=None, video_audio=None):
+        """Ordered picture/video labels, timestamps, vision embeddings and DeepStack."""
         from transformers import Qwen2VLImageProcessor
         from .vision_encoder import QwenVisionEncoder
         if not prompt.strip() or any(tag in prompt for tag in ('<|image_pad|>', '<|video_pad|>', '<|vision_start|>', '<|vision_end|>')):
             raise ValueError('Use ordinary text; visual markers are inserted by the encoder')
         processor = Qwen2VLImageProcessor(patch_size=16, temporal_patch_size=2, merge_size=2,
             min_pixels=65536, max_pixels=16777216, image_mean=[.5]*3, image_std=[.5]*3)
-        data = processor(images=images, return_tensors='pt')
-        grids=data['image_grid_thw'].tolist()
+        data = processor(images=images, return_tensors='pt') if images else None
+        grids=data['image_grid_thw'].tolist() if data is not None else []
         tower=QwenVisionEncoder(self.store,self.layers[0].q_proj.row_chunk).to(device).eval()
         ids,tags,positions=[],[],[]
         features,deep_features=[],[[],[],[]]
@@ -115,23 +119,43 @@ class QwenTextEncoder(nn.Module):
             nonlocal cursor
             ids.extend(values);tags.extend([1]*len(values));image_mask.extend([False]*len(values))
             positions.extend([[cursor+i]*3 for i in range(len(values))]);cursor+=len(values)
-        for index,grid in enumerate(grids):
-            t,h,w=grid;count=t*h*w
-            pixels=data['pixel_values'][offset:offset+count].to(device)
-            visual,deep=tower.encode_image(pixels,grid,vision_progress)
+        def vision_part(visual,deep,grid,pad_token):
+            nonlocal cursor
             features.append(visual)
             for i,d in enumerate(deep):deep_features[i].append(d)
-            offset+=count
-            text_part(self.tokenizer.encode(f'<Picture {index+1}>: ',add_special_tokens=False).ids)
-            # vision_start/end are visual tags for H3 but ordinary scalar RoPE
-            # positions for Qwen. image_pad has a merged 2D grid.
             text_part([self.tokenizer.token_to_id('<|vision_start|>')]);tags[-1]=0
-            hh,ww=h//2,w//2
-            ids.extend([self.tokenizer.token_to_id('<|image_pad|>')]*(hh*ww));tags.extend([0]*(hh*ww))
+            _,h,w=grid;hh,ww=h//2,w//2
+            ids.extend([self.tokenizer.token_to_id(pad_token)]*(hh*ww));tags.extend([0]*(hh*ww))
             image_mask.extend([True]*(hh*ww))
             positions.extend([[cursor,cursor+y,cursor+x] for y in range(hh) for x in range(ww)])
             cursor+=max(hh,ww)
             text_part([self.tokenizer.token_to_id('<|vision_end|>')]);tags[-1]=0
+        for index,grid in enumerate(grids):
+            t,h,w=grid;count=t*h*w
+            pixels=data['pixel_values'][offset:offset+count].to(device)
+            visual,deep=tower.encode_image(pixels,grid,vision_progress)
+            offset+=count
+            text_part(self.tokenizer.encode(f'<Picture {index+1}>: ',add_special_tokens=False).ids)
+            vision_part(visual,deep,grid,'<|image_pad|>')
+        audio_count=0
+        for index,frames in enumerate(videos):
+            if video_audio and video_audio[index]:
+                audio_count+=1
+                text_part(self.tokenizer.encode(f'<Audio {audio_count}>: ',add_special_tokens=False).ids)
+            sampled=frames[::12]
+            # Every Qwen temporal patch combines two consecutive sampled frames.
+            timestamps=[i*.5 for i in range(len(sampled))]
+            if len(sampled)%2:timestamps.append(timestamps[-1])
+            data_video=processor(images=None,videos=[sampled],return_tensors='pt')
+            t,h,w=data_video['video_grid_thw'][0].tolist()
+            if t!=len(timestamps)//2:raise ValueError('Unexpected reference video vision grid')
+            text_part(self.tokenizer.encode(f'<Video {index+1}>: ',add_special_tokens=False).ids)
+            for plane in range(t):
+                timestamp=(timestamps[2*plane]+timestamps[2*plane+1])/2
+                text_part(self.tokenizer.encode(f'<{timestamp:.1f} seconds>',add_special_tokens=False).ids)
+                pixels=data_video['pixel_values_videos'][plane*h*w:(plane+1)*h*w].to(device)
+                visual,deep=tower.encode_image(pixels,[1,h,w],vision_progress)
+                vision_part(visual,deep,[1,h,w],'<|video_pad|>')
         text_part(self.tokenizer.encode(prompt,add_special_tokens=False).ids)
         del tower
         import numpy as np

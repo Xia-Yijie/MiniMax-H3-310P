@@ -81,3 +81,14 @@ The compact pixel upscaler follows [Real-ESRGAN](https://github.com/xinntao/Real
 SRVGG architecture; its BSD-3-Clause license is retained in
 `licenses/Real-ESRGAN.txt`. The separately downloaded release weights have their
 own provenance in `configs/weights.json`.
+
+Reference-video encoding independently adapts the Apache-2.0 DiffSynth-Studio
+causal VAE's 17-frame chunks, per-frame group normalization and temporal padding.
+Temporal Conv3D is evaluated through Conv2D windows on Ascend 310P. Ref2VA video
+packing and timestamped 2 fps Qwen presentation were checked against DiffSynth,
+ComfyUI and the diffusers MiniMax-H3 reference encoder; no upstream runtime is
+bundled. CPU and NPU parity artifacts are kept as local validation outputs.
+
+The reference soundtrack encoder adapts the Apache-2.0 DiffSynth H3 Audio VAE
+encoder, posterior-mean projection and per-channel normalization. Reference
+audio/video packing follows the same Ref2VA temporal and spatial coordinates.

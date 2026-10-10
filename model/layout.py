@@ -92,24 +92,28 @@ class ImageConditionLayout(TextToVideoLayout):
             raise ValueError('Only distinct first/last keyframe indices 0/-1 are valid')
         base=TextToVideoLayout.build(text_length,video_shape,audio_shape,'cpu')
         _,_,vt,vh,vw=video_shape
-        total=0;grids=[];anchors=[]
+        total=0;grids=[];anchors=[];reference_span=0
         spans=[5/3*(1 if i%5==0 else 4) for i in range(vt)]
         for index,z in enumerate(image_latents):
-            if z.shape[:3]!=(1,24,1):raise ValueError('Condition must be [1,24,1,H,W]')
+            if z.ndim!=5 or z.shape[:2]!=(1,24) or z.shape[2]<1:raise ValueError('Condition must be [1,24,T,H,W]')
+            ref_t=z.shape[2]
+            if mode=='fl2va' and ref_t!=1:raise ValueError('Keyframes must have one temporal plane')
             lh,lw=z.shape[-2:]
             if mode=='fl2va' and (lh,lw)!=(vh,vw):raise ValueError('Keyframe canvas mismatch')
             rows=patchify_video(z).to(device)
             # Same random seed and first temporal plane as upstream noise augmentation.
             noise=torch.randn((1,24,vt+len(image_latents),lh,lw),
-                               generator=torch.Generator().manual_seed(seed))[:,:,:1]
+                               generator=torch.Generator().manual_seed(seed))[:,:,:ref_t]
             anchors.append(rows*noise_aug+patchify_video(noise).to(device)*(1-noise_aug))
-            grid=TextToVideoLayout.build(text_length,(1,24,1,lh,lw),audio_shape,'cpu')
+            grid=TextToVideoLayout.build(text_length,(1,24,ref_t,lh,lw),audio_shape,'cpu')
             frame=grid.positions[grid.video_slice].clone()
             if mode=='fl2va':frame[:,0]=text_length if keyframe_indices[index]==0 else text_length+sum(spans)-5/3
-            else:frame[:,0]=text_length+index
+            else:
+                frame[:,0]+=reference_span
+                reference_span+=1 if ref_t==1 else sum(5/3*(1 if i%5==0 else 4) for i in range(ref_t))
             grids.append(frame);total+=len(rows)
         positions=torch.cat((base.positions[:text_length],*grids,base.positions[text_length:]))
-        if mode=='ref2va':positions[text_length+total:,0]+=len(image_latents)
+        if mode=='ref2va':positions[text_length+total:,0]+=reference_span
         modalities=torch.cat((base.modalities[:text_length],torch.zeros(total,dtype=torch.long),base.modalities[text_length:]))
         if text_tags is not None:
             if text_tags.shape!=(text_length,) or not bool(((text_tags==0)|(text_tags==1)).all()):raise ValueError('Invalid Qwen visual/text tags')
@@ -127,4 +131,63 @@ class ImageConditionLayout(TextToVideoLayout):
         times=torch.tensor([video_time,audio_time,max(video_time,self.noise_aug)],device=device,dtype=torch.float32)
         indices=torch.zeros(self.video_slice.stop,device=device,dtype=torch.long)
         indices[self.audio_slice]=1;indices[self.condition_slice]=2
+        return times,indices
+
+
+@dataclass
+class AudioVideoConditionLayout(TextToVideoLayout):
+    condition_groups: list
+    condition_slice: slice
+    reference_audio_mask: torch.Tensor
+    noise_aug: float = .999
+
+    @classmethod
+    def build(cls,text_length,video_shape,audio_shape,device,image_latents,audio_latents,
+              text_tags=None,noise_aug=.999,seed=42):
+        if len(image_latents)!=len(audio_latents) or not any(a is not None for a in audio_latents):
+            raise ValueError('Audio references must be paired with visual references')
+        if not 0<noise_aug<=1:raise ValueError('noise_aug must be in (0,1]')
+        base=TextToVideoLayout.build(text_length,video_shape,audio_shape,'cpu')
+        groups=[];positions=[];modalities=[];audio_masks=[];span=0.;total=0
+        for z,a in zip(image_latents,audio_latents):
+            if z.ndim!=5 or z.shape[:2]!=(1,24) or z.shape[2]<1:
+                raise ValueError('Invalid visual reference latent')
+            if a is not None and (a.ndim!=3 or a.shape[:2]!=(2,32) or a.shape[2]<1):
+                raise ValueError('Invalid stereo reference latent')
+            at=a.shape[2] if a is not None else 1
+            grid=TextToVideoLayout.build(text_length,tuple(z.shape),(2,32,at),'cpu')
+            if a is not None:
+                apos=grid.positions[grid.audio_slice].clone();apos[:,0]+=span
+                rows=pack_audio(a).to(device)
+                groups.append(('audio',rows));positions.append(apos)
+                modalities.append(torch.full((len(rows),),2,dtype=torch.long));audio_masks.append(torch.ones(len(rows),dtype=torch.bool));total+=len(rows)
+            vpos=grid.positions[grid.video_slice].clone();vpos[:,0]+=span
+            noise=torch.randn((1,24,video_shape[2]+len(image_latents),*z.shape[-2:]),
+                              generator=torch.Generator().manual_seed(seed))[:,:,:z.shape[2]]
+            rows=patchify_video(z).to(device)*noise_aug+patchify_video(noise).to(device)*(1-noise_aug)
+            groups.append(('video',rows));positions.append(vpos)
+            modalities.append(torch.zeros(len(rows),dtype=torch.long));audio_masks.append(torch.zeros(len(rows),dtype=torch.bool));total+=len(rows)
+            visual_span=1 if z.shape[2]==1 else sum(5/3*(1 if i%5==0 else 4) for i in range(z.shape[2]))
+            span+=max(float(a.shape[2]) if a is not None else 0,visual_span)
+        target_pos=base.positions[text_length:].clone();target_pos[:,0]+=span
+        packed_pos=torch.cat((base.positions[:text_length],*positions,target_pos))
+        packed_tags=torch.cat((base.modalities[:text_length],*modalities,base.modalities[text_length:]))
+        if text_tags is not None:
+            if text_tags.shape!=(text_length,) or not bool(((text_tags==0)|(text_tags==1)).all()):raise ValueError('Invalid text tags')
+            packed_tags[:text_length]=text_tags.cpu()
+        mask=torch.zeros(packed_tags.shape,dtype=torch.bool);mask[text_length:text_length+total]=torch.cat(audio_masks)
+        return cls(text_length,tuple(video_shape),tuple(audio_shape),packed_pos.to(device),packed_tags.to(device),
+                   slice(base.audio_slice.start+total,base.audio_slice.stop+total),
+                   slice(base.video_slice.start+total,base.video_slice.stop+total),groups,
+                   slice(text_length,text_length+total),mask.to(device),noise_aug)
+
+    def embed(self,backbone,text,video,audio):
+        refs=[backbone.audio_proj(rows) if kind=='audio' else backbone.video_proj(rows) for kind,rows in self.condition_groups]
+        return torch.cat((text,*refs,backbone.audio_proj(pack_audio(audio)),backbone.video_proj(patchify_video(video))))
+
+    def time_inputs(self,video_time,audio_time,device):
+        times=torch.tensor([video_time,audio_time,max(video_time,self.noise_aug),1.],device=device,dtype=torch.float32)
+        indices=torch.zeros(self.video_slice.stop,device=device,dtype=torch.long)
+        indices[self.audio_slice]=1;indices[self.condition_slice]=2
+        indices[self.reference_audio_mask]=3
         return times,indices

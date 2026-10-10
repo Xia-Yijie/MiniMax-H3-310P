@@ -43,7 +43,8 @@ def validate_parameters(form):
         raise ValueError('种子须为非负整数，且小于 2^63')
     frames = max(22, 5 + 17 * math.ceil((seconds * 24 - 5) / 17))
     return dict(prompt=prompt, mode=mode, width=width, height=height,
-                seconds=seconds, frames=frames, seed=seed)
+                seconds=seconds, frames=frames, seed=seed,
+                reference_video_audio=form.get('reference_video_audio') in ('on','true','1'))
 
 
 class Backend:
@@ -102,6 +103,8 @@ class Backend:
         for flag, paths in images.items():
             for path in paths:
                 argv.extend([flag, str(path)])
+        if parameters.get('reference_video_audio') and images.get('--reference-video'):
+            argv.append('--reference-video-audio')
         if images.get('--reference-image'):
             argv.extend(['--reference-short-edge', '512'])
         job = {'args': argv, 'pixel_upscale': {'width': parameters['width'],

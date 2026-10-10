@@ -43,11 +43,12 @@ def prepare_text(argv,device,resident,cache_dir):
     from model.runtime import initialize_npu
     from model.text_encoder import QwenTextEncoder
     root=Path(__file__).resolve().parents[1]
-    if any(flag in argv for flag in ('--first-frame','--last-frame','--reference-image')):
+    if any(flag in argv for flag in ('--first-frame','--last-frame','--reference-image','--reference-video')):
         from infer.image_condition import add_image_arguments,request_spec,prepare,save_cache
         parser=argparse.ArgumentParser(add_help=False)
         add_image_arguments(parser)
         parser.add_argument('--prompt',required=True)
+        parser.add_argument('--frames',type=int,default=124)
         parser.add_argument('--width',type=int,default=512)
         parser.add_argument('--height',type=int,default=288)
         parser.add_argument('--backbone-checkpoint',type=Path)
@@ -56,7 +57,13 @@ def prepare_text(argv,device,resident,cache_dir):
         spec=request_spec(options,root)
         cache_dir.mkdir(parents=True,exist_ok=True)
         path=cache_dir/(uuid.uuid4().hex+'.npz')
-        save_cache(path,spec,prepare(spec,root,npu,npu,2048))
+        progress_path=Path(argv[argv.index('--output')+1]).with_suffix('.progress.jsonl')
+        started=time.monotonic()
+        def visual_progress(stage,**values):
+            line=json.dumps(dict(stage=stage,elapsed_seconds=time.monotonic()-started,**values))
+            print(line,flush=True)
+            with progress_path.open('a') as stream:stream.write(line+'\n')
+        save_cache(path,spec,prepare(spec,root,npu,npu,2048,log=visual_progress))
         return [*argv,'--condition-cache',str(path)]
     if '--prompt' not in argv:
         raise ValueError('Each generation request requires --prompt')

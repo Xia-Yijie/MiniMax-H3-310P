@@ -152,14 +152,19 @@ def infer(args):
     frames=args.frames if args.frames is not None else max(22,5+17*math.ceil((args.seconds*24-5)/17))
     if frames<22 or (frames-5)%17:
         raise ValueError('模型要求帧数为 17k+5，且至少 22 帧')
-    if args.reference_image and (args.first_frame or args.last_frame):
+    if (args.reference_image or args.reference_video) and (args.first_frame or args.last_frame):
         raise ValueError('首尾图与多参考图须分开提交')
     args.first_frame=args.first_frame.expanduser().resolve() if args.first_frame else None
     args.last_frame=args.last_frame.expanduser().resolve() if args.last_frame else None
     args.reference_image=[path.expanduser().resolve() for path in args.reference_image]
-    for path in [args.first_frame,args.last_frame,*args.reference_image]:
+    args.reference_video=[path.expanduser().resolve() for path in args.reference_video]
+    for path in [args.first_frame,args.last_frame,*args.reference_image,*args.reference_video]:
         if path is not None and not path.is_file():
             raise FileNotFoundError(path)
+    if len(args.reference_video)>3:raise ValueError('最多使用 3 段参考视频')
+    from infer.media import video_spec
+    video_specs=[video_spec(path,frames) for path in args.reference_video]
+    if sum(spec['frames']/24 for spec in video_specs)>15:raise ValueError('参考视频总时长不能超过 15 秒')
     directory=state_dir(args.device)
     if args.no_wait:
         if not worker_alive(directory):
@@ -191,6 +196,9 @@ def infer(args):
             argv += [flag,str(path.expanduser().resolve())]
     for path in args.reference_image:
         argv += ['--reference-image',str(path.expanduser().resolve())]
+    for path in args.reference_video:
+        argv += ['--reference-video',str(path)]
+    if getattr(args,'reference_video_audio',False):argv += ['--reference-video-audio']
     if args.reference_image:
         argv += ['--reference-short-edge','512']
     job={'args':argv,'pixel_upscale':{'width':args.width,'height':args.height,'output':str(output)}}
@@ -238,6 +246,8 @@ def main():
     request.add_argument('--output',type=Path)
     request.add_argument('--first-frame',type=Path)
     request.add_argument('--last-frame',type=Path)
+    request.add_argument('--reference-video-audio',action='store_true',help='同时参考视频原音轨')
+    request.add_argument('--reference-video',type=Path,action='append',default=[])
     request.add_argument('--reference-image',type=Path,action='append',default=[])
     request.add_argument('--timeout',type=float,default=3600)
     request.add_argument('--no-wait',action='store_true',help='只提交任务，立即返回')

@@ -17,7 +17,7 @@ import torch
 
 from model.audio_decoder import AudioDecoder
 from model.h3 import H3Backbone
-from model.layout import TextToVideoLayout, ImageConditionLayout, unpatchify_video, unpack_audio
+from model.layout import TextToVideoLayout, ImageConditionLayout, AudioVideoConditionLayout, unpatchify_video, unpack_audio
 from model.runtime import initialize_npu
 from model.text_encoder import QwenTextEncoder
 from model.video_decoder import VideoDecoder
@@ -165,10 +165,10 @@ def main(argv=None, resident=None):
         parser.error(f'{mode} conditions require a matching {mode} backbone')
     if args.pdd_checkpoint and (mode not in args.pdd_checkpoint.name.lower() or mode not in args.pdd_basis.name.lower()):
         parser.error('Backbone, PDD LoRA and AdaLN basis must use the same model family')
-    if has_images and args.text_cache: parser.error('Images require --condition-cache, not a text-only cache')
-    if args.condition_cache and not has_images: parser.error('--condition-cache requires image inputs')
+    if has_images and args.text_cache: parser.error('Visual references require --condition-cache, not a text-only cache')
+    if args.condition_cache and not has_images: parser.error('--condition-cache requires visual inputs')
     if resident is not None and has_images and not args.condition_cache:
-        parser.error('Resident image jobs require a prepared --condition-cache')
+        parser.error('Resident visual jobs require a prepared --condition-cache')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     log_path = args.output.with_suffix('.progress.jsonl')
     started = time.monotonic()
@@ -257,12 +257,16 @@ def main(argv=None, resident=None):
     else:
         if has_images:
             if args.condition_cache and args.condition_cache.exists():
-                hidden, text_tags, image_latents = load_cache(args.condition_cache, visual_spec)
+                values = load_cache(args.condition_cache, visual_spec)
+                hidden, text_tags, image_latents = values[:3]
+                audio_references = values[3] if len(values)>3 else None
                 log('loaded_visual_condition_cache', tokens=len(hidden), images=len(image_latents))
             else:
                 text_device = initialize_npu(int(args.text_device.split(':')[1]))
-                hidden, text_tags, image_latents = prepare(visual_spec, root, text_device, device, args.row_chunk, log)
-                if args.condition_cache:save_cache(args.condition_cache, visual_spec, (hidden,text_tags,image_latents))
+                values = prepare(visual_spec, root, text_device, device, args.row_chunk, log)
+                hidden, text_tags, image_latents = values[:3]
+                audio_references = values[3] if len(values)>3 else None
+                if args.condition_cache:save_cache(args.condition_cache, visual_spec, values)
         elif args.text_cache and args.text_cache.exists():
             metadata = json.loads(args.text_cache.with_suffix('.json').read_text())
             tokenizer_hash = hashlib.sha256((root / 'weights/processor/tokenizer.json').read_bytes()).hexdigest()
@@ -338,8 +342,11 @@ def main(argv=None, resident=None):
                 resident.update(backbone=backbone, model_key=model_key, sigmas=(sigma_v,sigma_a))
         text = backbone.encode_condition(hidden.to(device))
         if has_images:
-            layout = ImageConditionLayout.build(len(text),video_shape,audio_shape,device,image_latents,mode,
-                keyframe_indices=[item['index'] for item in visual_spec['images']],text_tags=text_tags,seed=args.seed)
+            if audio_references:
+                layout = AudioVideoConditionLayout.build(len(text),video_shape,audio_shape,device,image_latents,audio_references,text_tags=text_tags,seed=args.seed)
+            else:
+                layout = ImageConditionLayout.build(len(text),video_shape,audio_shape,device,image_latents,mode,
+                    keyframe_indices=[item['index'] for item in visual_spec['images']],text_tags=text_tags,seed=args.seed)
         else:
             layout = TextToVideoLayout.build(len(text),video_shape,audio_shape,device)
         # Reference pipeline initializes each modality with the same seed.

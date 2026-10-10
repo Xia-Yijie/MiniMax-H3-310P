@@ -2,6 +2,7 @@
 import argparse
 import io
 import threading
+import tempfile
 from pathlib import Path
 from subprocess import TimeoutExpired
 
@@ -79,23 +80,40 @@ def create_app(default_work_dir=None, backend=None):
     def submit():
         parameters = validate_parameters(request.form)
         uploads = {key: [f for f in request.files.getlist(key) if f.filename]
-                   for key in ('first_frame', 'last_frame', 'references')}
+                   for key in ('first_frame', 'last_frame', 'references', 'reference_videos')}
         if len(uploads['first_frame']) > 1 or len(uploads['last_frame']) > 1:
             raise ValueError('首帧和尾帧各只能上传一张图')
         if len(uploads['references']) > 8:
             raise ValueError('最多上传 8 张参考图')
+        if len(uploads['reference_videos']) > 3:
+            raise ValueError('最多上传 3 段参考视频')
         mode = parameters['mode']
         if mode == 'text' and any(uploads.values()):
-            raise ValueError('文字模式不接受参考图')
-        if mode == 'frames' and (uploads['references'] or not (uploads['first_frame'] or uploads['last_frame'])):
-            raise ValueError('首尾帧模式至少需要一张首帧或尾帧图，不能混入多参考图')
-        if mode == 'references' and (uploads['first_frame'] or uploads['last_frame'] or not uploads['references']):
-            raise ValueError('多参考图模式至少需要一张参考图，不能混入首尾帧')
+            raise ValueError('文字模式不接受参考素材')
+        if mode == 'frames' and (uploads['references'] or uploads['reference_videos'] or not (uploads['first_frame'] or uploads['last_frame'])):
+            raise ValueError('首尾帧模式至少需要一张首帧或尾帧图，不能混入参考图片或视频')
+        if mode == 'references' and (uploads['first_frame'] or uploads['last_frame'] or not (uploads['references'] or uploads['reference_videos'])):
+            raise ValueError('参考模式至少需要一张图片或一段视频，不能混入首尾帧')
         # Validate every image before creating files or starting the model.
         prepared = []
+        video_seconds = 0
         extensions = {'PNG': '.png', 'JPEG': '.jpg', 'WEBP': '.webp'}
         for key, files in uploads.items():
             for index, upload in enumerate(files):
+                if key == 'reference_videos':
+                    from infer.media import video_spec
+                    suffix = Path(upload.filename).suffix.lower()
+                    if suffix not in ('.mp4','.webm','.mov','.mkv'):
+                        raise ValueError('参考视频支持 MP4、WebM、MOV、MKV')
+                    data = upload.stream.read(96 * 1024**2 + 1)
+                    if len(data)>96*1024**2:raise ValueError('每段参考视频不能超过 96 MiB')
+                    with tempfile.NamedTemporaryFile(suffix=suffix) as temporary:
+                        temporary.write(data);temporary.flush()
+                        spec=video_spec(temporary.name,parameters['frames'])
+                    video_seconds += spec['frames']/24
+                    if video_seconds>15:raise ValueError('参考视频总时长不能超过 15 秒')
+                    prepared.append((key,index,suffix,data))
+                    continue
                 data = upload.stream.read(20 * 1024**2 + 1)
                 if len(data) > 20 * 1024**2:
                     raise ValueError('每张参考图不能超过 20 MiB')
@@ -110,8 +128,8 @@ def create_app(default_work_dir=None, backend=None):
                 prepared.append((key, index, suffix, data))
         root = selected_root()
         identifier = new_identifier()
-        images = {'--first-frame': [], '--last-frame': [], '--reference-image': []}
-        flags = dict(first_frame='--first-frame', last_frame='--last-frame', references='--reference-image')
+        images = {'--first-frame': [], '--last-frame': [], '--reference-image': [], '--reference-video': []}
+        flags = dict(first_frame='--first-frame', last_frame='--last-frame', references='--reference-image',reference_videos='--reference-video')
         for key, index, suffix, data in prepared:
             folder = root / 'inputs' / identifier
             folder.mkdir(parents=True, exist_ok=True)

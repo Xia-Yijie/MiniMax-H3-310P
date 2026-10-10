@@ -152,6 +152,26 @@ class WebTests(unittest.TestCase):
         result = self.client.get('/api/jobs', query_string={'work_dir': str(other)}).get_json()
         self.assertEqual(result['jobs'], [])
 
+    def test_video_reference_upload_reaches_queue(self):
+        import subprocess
+        clip=Path(self.temp.name)/'ref.mp4'
+        subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=red:size=64x64:rate=24',
+                        '-frames:v','24','-y',str(clip)],check=True)
+        r=self.submit(mode='references',seconds='0.9',reference_video_audio='on',reference_videos=(io.BytesIO(clip.read_bytes()),'ref.mp4'))
+        self.assertEqual(r.status_code,202,r.get_json())
+        record=r.get_json();path=Path(record['inputs']['--reference-video'][0])
+        self.assertEqual(path.read_bytes(),clip.read_bytes())
+        queued=json.loads((self.queue/'pending'/(record['id']+'.json')).read_text())
+        self.assertIn('--reference-video',queued['args'])
+        self.assertIn('--reference-video-audio',queued['args'])
+        self.assertTrue(record['parameters']['reference_video_audio'])
+
+    def test_invalid_reference_video_is_rejected_before_submission(self):
+        r=self.submit(mode='references',reference_videos=(io.BytesIO(b'not a video'),'bad.mp4'))
+        self.assertEqual(r.status_code,400)
+        self.assertFalse(any((self.queue/'pending').iterdir()))
+        self.assertFalse(self.root.exists())
+
 
 if __name__ == '__main__':
     unittest.main()
